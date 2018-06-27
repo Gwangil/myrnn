@@ -1,7 +1,7 @@
-##### version ------------------------------------------------------------------------------------
-# 1.2.0 -> 1.2.1
-# note 1) detach rescale function from calculate predict value
-# note 2) 
+##### version ----------------------------------------------------------------------------------
+# 1.2.1 -> 1.2.2
+# note 1) modify Loss derivative
+# note 2) rmse plotting option when validation == 0
 
 library(data.table)
 library(dplyr)
@@ -79,7 +79,7 @@ max_y <- max(y)
 x <- as.matrix(apply(x, 2, rescale, newMin = 0, newMax = 1))
 y <- rescale(y, newMin = 0, newMax = 1)
 
-##### RNN ----------------------------------------------------------------------------------------
+##### RNN -------------------------------------------------------------------------------------------------
 myrnn <- function(x, y, hidden,
                   learningRate = 0.0001, epoch = 1, batch.size = 128,
                   loss = "Elastic", optimizer = "sgd", activator = NULL,
@@ -108,6 +108,7 @@ myrnn <- function(x, y, hidden,
     
     input <- ncol(x_train)
     output <- ncol(as.matrix(y_train))
+    # timestep <- nrow(x_train)
     
     # initialize weight
     if (is.null(init.weight)) {
@@ -169,14 +170,15 @@ myrnn <- function(x, y, hidden,
                     Whh_dropconnect <- Whh
                     Whh_dropconnect[sample(hidden * hidden, hidden * hidden * dropconnect)] <- 0
                     at <- Wxh_dropconnect %*% x_train_batch[i, ] + Whh_dropconnect %*% h0 + biash
+                    # at <- Wxh %*% x_train_batch[i, ] + Whh %*% h0 + biash
                 } else {
                     Wxh_dropconnect <- Wxh
                     Wxh_dropconnect[sample(input * hidden, input * hidden * dropconnect)] <- 0
                     Whh_dropconnect <- Whh
                     Whh_dropconnect[sample(hidden * hidden, hidden * hidden * dropconnect)] <- 0
                     at <- Wxh_dropconnect %*% x_train_batch[i, ] + Whh_dropconnect %*% ht[i-1, ] + biash
+                    # at <- Wxh %*% x_train_batch[i, ] + Whh %*% ht[i-1, ] + biash
                 }
-                
                 # activation
                 if (is.null(activator)) {
                     ht[i, ] <- at
@@ -190,7 +192,6 @@ myrnn <- function(x, y, hidden,
                 
                 # dropout
                 ht[i, sample(hidden, hidden * dropout)] <- 0
-                
                 # output layer
                 ot[i] <- Why %*% ht[i, ] + biasy
                 LOSS[i] <- switch (loss,
@@ -252,12 +253,11 @@ myrnn <- function(x, y, hidden,
             dLdWhy <- array(0, c(output, hidden, timestep))
             dLdbiash <- matrix(0, timestep, hidden)
             dLdot <- NULL
-            
             for (i in timestep:1) {
                 dLdot[i] <- switch (loss,
-                                    L1 = sign(ot[i]),
-                                    L2 = -2 * ot[i] * (y_train_batch[i] - ot[i]),
-                                    Elastic = ot[i] * (ot[i] - y_train_batch[i]) + 0.5 * sign(ot[i])
+                                    L1 = -sign(y_train_batch[i] - ot[i]),
+                                    L2 = -2 * (y_train_batch[i] - ot[i]),
+                                    Elastic = (ot[i] - y_train_batch[i]) - 0.5 * sign(y_train_batch[i] - ot[i])
                 )
                 if (i == timestep) {
                     dLdht <- crossprod(Why, dLdot[i])
@@ -279,7 +279,6 @@ myrnn <- function(x, y, hidden,
                 }
                 dLdWxh[, , i] <- ((1 - ht[i, ] ^ 2) * dLdht) %*% x_train_batch[i, ]
             }
-            
             dLdbiasy <- sum(dLdot)
             dLdbiash <- apply(dLdbiash, 2, sum)
             dLdWhy <- apply(dLdWhy, c(1, 2), sum)
@@ -305,7 +304,6 @@ myrnn <- function(x, y, hidden,
                           dropconnect = 0,
                           validation = 0,
                           plotting = F)$prediction
-            
             rmse[iter] <- sqrt(mean((y_train - pred) ^ 2))
             
             # current result export
@@ -381,7 +379,7 @@ myrnn <- function(x, y, hidden,
                 matplot(cbind(y_train, pred), type = "l", lty = 1, ylab = "Target(y)")
                 legend("top", legend = c("Actual(Normalized)", "Predicted"), lty = 1, col = 1:2, bty = "n", ncol = 2)
                 matplot(cbind(y_train - pred, 0), type = "l", lty = 1, ylab = "Error")
-                plot(rmse, type = "l", ylab = "RMSE per epoch")
+                plot(x = 1:epoch, y = c(rmse, rep_len(NA, epoch - iter)), type = "l", ylab = "RMSE per epoch")
                 legend("top", legend = c("Train RMSE", rmse[iter]), lty = 1, col = 1, bty = "n", ncol = 2)
             } else {
                 if (iter == 1) {win.graph(); par(mar = c(2, 2, 3, 1))
