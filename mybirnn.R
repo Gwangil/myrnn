@@ -50,7 +50,7 @@ y <- rescale(train[, 31], 0, 1)
 ##### birnn layer functions ----------------------------------------------------------------------
 layer_birnn <- function(x, y, hidden, epoch = 1,
                         init.weight = NULL, init.dist = NULL,
-                        activator.state = NULL, activator.out = NULL,
+                        activator.state = NULL, activator.out = "linear",
                         loss = "Elastic", accuracy = "RMSE",
                         learningRate = 0.0005,
                         optimizer = "sgd",
@@ -81,7 +81,7 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
     input <- ncol(x_train)
     output <- ncol(as.matrix(y_train))
     hidden <- hidden 
-    
+
     # initialize weight
     if (is.null(init.weight)) {
         if (is.null(init.dist)) {
@@ -112,20 +112,20 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
             stop("Given 'init.dist' is not available.\nUse {NULL || 'Xavier' || 'He'},
                  NULL use Uniform(0.01).")
         }
+    } else {
+        if (is.list(init.weight)) {
+            Whx <- init.weight$Whx
+            Whh <- init.weight$Whh
+            Wyh <- init.weight$Wyh
+            biash <- init.weight$biash
+            Vgx <- init.weight$Vgx
+            Vgg <- init.weight$Vgg
+            Vyg <- init.weight$Vyg
+            biasg <- init.weight$biasg
+            biasy <- init.weight$biasy
         } else {
-            if (is.list(init.weight)) {
-                Whx <- init.weight$Whx
-                Whh <- init.weight$Whh
-                Wyh <- init.weight$Wyh
-                biash <- init.weight$biash
-                Vgx <- init.weight$Vgx
-                Vgg <- init.weight$Vgg
-                Vyg <- init.weight$Vyg
-                biasg <- init.weight$biasg
-                biasy <- init.weight$biasy
-            } else {
-                stop("'init.weight' should be list type.")
-            }
+            stop("'init.weight' should be list type.")
+        }
     }
     
     # training
@@ -156,14 +156,14 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
             agt[] <- sapply(agt, leaky_ReLU)
         } else {
             stop("Given 'activator.state' is not available.\nUse {NULL || 'tanh' || 'ReLU'},
-                 NULL use Identity, ReLU use LeakyReLU.")
+                  NULL use Identity, ReLU use LeakyReLU.")
         }
         
         # bidirection out
         yt <- crossprod(tcrossprod(Wyh, aht) + tcrossprod(Vyg, agt), biasy)
         
         # activation : bidirection out
-        if (is.null(activator.out)) {
+        if (activator.out == "linear") {
             ayt <- yt
         } else if (activator.out == "tanh") {
             ayt <- tanh(yt)
@@ -171,29 +171,28 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
             ayt <- yt
             ayt[] <- sapply(ayt, leaky_ReLU)
         } else {
-            stop("Given 'activator.out' is not available. \nUse {NULL || 'tanh' || 'ReLU'},
-                 NULL use Identity, ReLU use LeakyReLU.")
+            stop("Given 'activator.out' is not available. \nUse {'linear' || 'tanh' || 'ReLU'}")
         }
-        
+
         # Loss, Accuracy
         Loss[iter] <- switch(loss,
-                             L1 = sum(abs(y_train - ayt)) / timestep,
-                             L2 = sum((y_train - ayt) ^ 2) / timestep,
-                             Elastic = sum(0.5 * ((y_train - ayt) ^ 2) + 0.5 * abs(y_train - ayt)) /
-                                 timestep
+                       L1 = sum(abs(y_train - ayt)) / timestep,
+                       L2 = sum((y_train - ayt) ^ 2) / timestep,
+                       Elastic = sum(0.5 * ((y_train - ayt) ^ 2) + 0.5 * abs(y_train - ayt)) /
+                           timestep
         )
         Accuracy[iter] <- switch(accuracy,
-                                 MAE = sum(abs(y_train - ayt)) / timestep,
-                                 MSE = sum((y_train - ayt) ^ 2) / timestep,
-                                 RMSE = sqrt(sum((y_train - ayt) ^ 2) / timestep),
-                                 Elastic = sum(0.5 * ((y_train - ayt) ^ 2) + 0.5 * abs(y_train - ayt)) /
-                                     timestep
+                           MAE = sum(abs(y_train - ayt)) / timestep,
+                           MSE = sum((y_train - ayt) ^ 2) / timestep,
+                           RMSE = sqrt(sum((y_train - ayt) ^ 2) / timestep),
+                           Elastic = sum(0.5 * ((y_train - ayt) ^ 2) + 0.5 * abs(y_train - ayt)) /
+                               timestep
         )
         
         # overflow -> restart
         if (!all(is.finite(Loss))) {
             cat("Gradient Overflow... Restart Training with new initialized weights\n")
-            
+
             layer_birnn(x = x,
                         y = y,
                         hidden = hidden,
@@ -279,7 +278,7 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
                                                     "Vyg" = Vyg,
                                                     "biasg" = biasg,
                                                     "biasy" = biasy),
-                                 init.dist = NULL,
+                                 init.dist = linear,
                                  validation = 0,
                                  plotting = F)
             
@@ -288,32 +287,32 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
         }
         
         # calculate gradient
-        daytdyt <- switch(activator.out,
-                          NULL = 1,
-                          tanh = (1 - tanh(ayt) ^ 2),
-                          ReLU = max(0.01, sign(ayt)))
         dLdayt <- switch(loss,
-                         L1 = sign(ayt),
-                         L2 = 2 * ayt * (ayt - y_train),
-                         Elastic = (ayt * (ayt - y_train) + 0.5 * sign(ayt)))
+                         L1 = -sign(y_train - ayt),
+                         L2 = 2 * (ayt - y_train),
+                         Elastic = ((ayt - y_train) - 0.5 * sign(y_train - ayt)))
+        daytdyt <- switch(activator.out,
+                          linear = 1,
+                          tanh = (1 - ayt ^ 2),
+                          ReLU = max(0.01, sign(ayt)))
         dLdyt <- dLdayt * daytdyt
         dLdbiasy <- apply(dLdyt, 2, sum)
-        dLdWyh <- t(crossprod(ht[-1, ], dLdyt))
-        dLdVyg <- t(crossprod(gt[-(timestep + 1), ], dLdyt))
+        dLdWyh <- crossprod(dLdyt, aht)
+        dLdVyg <- crossprod(dLdyt, agt)
         dahtdht <- switch(activator.state,
-                          NULL = 1,
-                          tanh = (1 - tanh(aht) ^ 2),
+                          linear = 1,
+                          tanh = (1 - aht ^ 2),
                           ReLU = max(0.01, sign(aht)))
         dagtdgt <- switch(activator.state,
-                          NULL = 1,
-                          tanh = (1 - tanh(agt) ^ 2),
+                          linear = 1,
+                          tanh = (1 - agt ^ 2),
                           ReLU = max(0.01, sign(agt)))
-        dLdWhh <- crossprod(t(tcrossprod(t(Wyh), dLdyt)) * dahtdht, ht[-31, ])
-        dLdVgg <- crossprod(t(tcrossprod(t(Vyg), dLdyt)) * dagtdgt, gt[-1, ])
-        dLdWhx <- crossprod(t(tcrossprod(t(Wyh), dLdyt)) * dahtdht, as.matrix(x_train))
-        dLdVgx <- crossprod(t(tcrossprod(t(Vyg), dLdyt)) * dagtdgt, as.matrix(x_train))
-        dLdbiash <- apply(t(tcrossprod(t(Wyh), dLdyt)) * dahtdht, 2, sum)
-        dLdbiasg <- apply(t(tcrossprod(t(Vyg), dLdyt)) * dagtdgt, 2, sum)
+        dLdWhh <- crossprod(dLdyt %*% Wyh * dahtdht, ht[-(timestep + 1), ])
+        dLdVgg <- crossprod(dLdyt %*% Vyg * dagtdgt, gt[-1, ])
+        dLdWhx <- crossprod(dLdyt %*% Wyh * dahtdht, as.matrix(x_train))
+        dLdVgx <- crossprod(dLdyt %*% Vyg * dagtdgt, as.matrix(x_train))
+        dLdbiash <- apply(dLdyt %*% Wyh * dahtdht, 2, sum)
+        dLdbiasg <- apply(dLdyt %*% Vyg * dagtdgt, 2, sum)
         
         # update weight
         if (optimizer == "sgd") {
@@ -369,8 +368,6 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
                 matplot(x = 1:epoch, y = cbind(c(Accuracy, rep_len(NA, epoch - iter)),
                                                c(Accuracy_valid, rep_len(NA, epoch - iter))),
                         type = "l", lty = 1, main = paste0("Accuracy(", accuracy, ") per epoch"))
-                # matplot(x = 1:epoch, y = cbind(rmse, rmse_valid), type = "l", lty = 1,
-                #         main = "RMSE per epoch")
                 legend("top", lty = 1, col = 1:2, bty = "n", ncol = 2,
                        legend = c("Train Accuracy", "Validation Accuracy",
                                   Accuracy[iter], Accuracy_valid[iter]))
@@ -380,7 +377,7 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
             "Loss(", loss, ") : ", Loss[iter], "\tLoss_valid :", Loss_valid[iter], "\n",
             "Accuracy(", accuracy, ") : ", Accuracy[iter], "\tAccuracy_valid : ", Accuracy[iter],
             "\nUse ", round(Sys.time() - epochstart, 3), "sec\n", sep = "")
-        }
+    }
     
     return(list("Accuracy" = Accuracy,
                 "Loss" = Loss,
@@ -395,19 +392,19 @@ layer_birnn <- function(x, y, hidden, epoch = 1,
                                  "biasy" = biasy),
                 "prediction" = ayt)
     )
-    }
+}
 
 ##### train --------------------------------------------------------------------------------------
 model <- layer_birnn(x = x,
                      y = y,
-                     hidden = 15,
-                     epoch = 2000,
+                     hidden = 150,
+                     epoch = 1000,
                      optimizer = "adam",
-                     learningRate = 0.0001,
+                     learningRate = 0.0005,
                      init.weight = NULL,
                      init.dist = "Xavier",
                      activator.state = "tanh",
-                     activator.out = "tanh",
+                     activator.out = "linear",
                      loss = "Elastic",
                      accuracy = "RMSE",
                      validation = 0.2, 
