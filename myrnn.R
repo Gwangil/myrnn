@@ -1,13 +1,14 @@
 ##### version ----------------------------------------------------------------------------------
-# 1.2.1 -> 1.2.2
-# note 1) modify Loss derivative
-# note 2) rmse plotting option when validation == 0
+# 1.2.2 -> 1.2.3
+# note 1) state hold and pass next batch
+# note 2) 
+
 
 library(data.table)
 library(dplyr)
 library(readxl)
-
-##### Utility Functions --------------------------------------------------------------------------
+setwd("D:/workspace/RNN")
+##### Utility Functions ---------------------------------------------------------------------------
 findruns_forward <- function(x, k, pattern = 1) {
     n <- length(x)
     k <- round(k)
@@ -33,9 +34,7 @@ lagk <- function(x, k) {
     return(x_lag)
 }
 
-rescale <- function(x, newMin = 0, newMax = 1) {
-    (x - min(x)) / (max(x) - min(x)) * (newMax - newMin) + newMin
-}
+rescale <- function(x, newMin = 0, newMax = 1) {(x - min(x)) / (max(x) - min(x)) * (newMax - newMin) + newMin}
 
 sgd <- function(weight, gradient, lr) {
     weight = weight - lr * gradient
@@ -72,8 +71,48 @@ He <- function(n, inputnode) {
 }
 
 ##### Data Loading -------------------------------------------------------------------------------
-x <- train[,-31]
-y <- train[[31]]
+#args <- commandArgs(trailing = TRUE)
+args <- c("2", "T")
+
+DataList <- grep("^20180[3-9]", list.files(path = "D:/PVD/시험생산", pattern = ".xlsx", recursive = TRUE), value = T) ## hidden '~$' temporary data) %>% grep("[$]",.,value=T,inver=T)
+DataList <- paste("D:/PVD/시험생산", DataList, sep = "/")
+for (i in DataList) {
+    for (j in excel_sheets(i)) {
+        assign(paste(j, substr(i, 13, 20), sep = "_"), read_xlsx(i, sheet = j))
+    }
+};rm(i, j, DataList)
+
+ChamberSelect <- grep(paste0("^C", args[1], ".", args[2]), ls(), value = T)
+distance <- c(58, 53, 47)
+
+train <- data.frame()
+# for (i in ChamberSelect[-(1:2)][c(1, 3, 2)]) { # c2b
+for (i in ChamberSelect) {
+    temp <- get(i)
+    runs <- round(600 * distance[as.numeric(args[1])] / mean(temp$EML_LINE_SPEED))
+    temp <- temp %>% select(grep("IR$|FR$|VO$|PV$|사용유무", colnames(.)))
+    temp1 <- temp %>% select(grep("IR$|FR$|VO$", colnames(.))) %>% lagk(., 9)
+    temp2 <- temp %>% select(grep("IR$|FR$|VO$", colnames(.), invert = T)) %>% .[-1:-9,]
+    temp <- cbind(temp1, temp2)
+    temp <- cbind(head(select(temp, grep("PV$", colnames(temp), invert = T)), -runs),
+                  tail(select(temp, grep("PV$", colnames(temp))), -runs))
+    tempuse <- temp %>% select(grep("사용유무", colnames(.)))
+    temp[intersect(findruns_forward(tempuse[[as.numeric(args[1])]], runs),
+                   intersect(findruns_forward(tempuse[-as.numeric(args[1])][[1]], runs, 0),
+                             findruns_forward(tempuse[-as.numeric(args[1])][[2]], runs, 0))), ] %>%
+        select(grep("IR|FR|VO|PV", colnames(.))) -> temp_train
+    colnames(temp_train) <- paste("C", args[1], args[2], c(paste0(c("_FR", "_IR", "_VO"), "_lag_", rep(0:9, each = 3)), "_XRF"), sep = "")
+    train <- rbind(train, temp_train, use.names = F)
+};rm(list = setdiff(ls()[!ls() %in% c("train")], lsf.str()))
+
+# trim <- quantile(train$C2B_XRF, c(0.015, 0.99)) #C2B
+# train %>% filter(train$C2B_XRF > trim[1] & train$C2B_XRF < trim[2]) -> train_trim #C2B
+# train[7000:15500, ][-3550:-3560, ] -> train_trim # C3T
+# train[6500:15000, ][-3700:-3710, ] -> train_trim #C3B
+train[-c(1000:1150, 1350:2200, 2400:2750, 5400:5730, 6400:6450, 7000:7015), ] -> train_trim #C2T
+# train -> train_trim
+x <- train_trim[,-31]
+y <- train_trim[[31]]
 min_y <- min(y)
 max_y <- max(y)
 x <- as.matrix(apply(x, 2, rescale, newMin = 0, newMax = 1))
@@ -161,7 +200,7 @@ myrnn <- function(x, y, hidden,
             # forward
             ht <- matrix(0, timestep, hidden)
             ot <- LOSS <- 0
-            h0 <- rep_len(0, hidden)
+            if (b == 1) h0 <- rep_len(0, hidden)
             for (i in 1:timestep) {
                 if (i == 1) {
                     # dropconnect
@@ -190,6 +229,9 @@ myrnn <- function(x, y, hidden,
                     stop("Given 'activator' is not available. Use {NULL || 'tanh' || 'ReLU'}, NULL use Identity, ReLU use LeakyReLU.")
                 }
                 
+				# state hold
+				h0 <- ht[timestep, ]
+				
                 # dropout
                 ht[i, sample(hidden, hidden * dropout)] <- 0
                 # output layer
@@ -463,18 +505,79 @@ update_myrnn <- function(model, x, y, learningRate = 0.0001, epoch = 100, batch.
           plotting = plotting)
 }
 ##### Training -----------------------------------------------------------------------------------
-model1 <- myrnn(x = x,
-                y = y,
-                hidden = 15,
+# rm(result_current)
+model <- myrnn(x = x,
+               y = y,
+               hidden = 150,
+               learningRate = 0.0001,
+               epoch = 1000,
+               batch.size = 128,
+               loss = "Elastic",
+               activator = "tanh",
+               init.weight = NULL,
+               init.dist = "Xavier",
+               optimizer = "adam",
+               dropout = 0.2,
+               dropconnect = 0.2,
+               validation = 0.2,
+               plotting = T)
+
+##### other chamber ------------------------------------------------------------------------------
+args <- c("3", "top")
+source('dataload.R')
+x_3t <- rescale(train[5700:12200, -31], 0, 1) %>% as.matrix()
+y_3t <- rescale(train[5700:12200, 31], 0, 1) %>% as.matrix()
+model11 <- myrnn(x = x_3t,
+               y = y_3t,
+               hidden = 150,
+               learningRate = 0.0001,
+               epoch = 1,
+               batch.size = nrow(x_3t),
+               loss = "Elastic",
+               activator = "tanh",
+               init.weight = model$weights,
+               init.dist = "Xavier",
+               optimizer = "adam",
+               dropout = 0,
+               dropconnect = 0,
+               validation = 0,
+               plotting = T)
+
+model1 <- myrnn(x = x_3t,
+                y = y_3t,
+                hidden = 150,
                 learningRate = 0.0001,
-                epoch = 3000,
-                batch.size = 128,
+                epoch = 1000,
+                batch.size = nrow(x_3t),
                 loss = "Elastic",
                 activator = "tanh",
-                init.weight = NULL,
+                init.weight = model$weights,
                 init.dist = "Xavier",
                 optimizer = "adam",
                 dropout = 0,
                 dropconnect = 0,
                 validation = 0.2,
                 plotting = T)
+# 
+# model <- myrnn(x = x,
+#                y = y,
+#                hidden = 15,
+#                learningRate = 0.0001,
+#                epoch = 2920,
+#                batch.size = nrow(x),
+#                loss = "Elastic",
+#                activator = "tanh",
+#                init.weight = model$weights,
+#                init.dist = "Xavier",
+#                optimizer = "adam",
+#                dropout = 0,
+#                dropconnect = 0,
+#                validation = 0.2,
+#                plotting = T)
+# 
+# 
+##### Memo ---------------------------------------------------------------------------------------
+# hiddens <- c(1, 2, 3, ...)
+# hidden <- hiddens[h]
+# if (h == 1) { input -> myrnn -> output[[h]]}
+# else (output[[h - 1]] -> myrnn -> output[[h]])
