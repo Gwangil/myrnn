@@ -1,6 +1,6 @@
 ##### version ----------------------------------------------------------------------------------
-# 1.2.2 -> 1.2.3
-# note 1) state hold and pass next batch
+# 1.2.3 -> 1.2.4
+# note 1) myrnn result predction -> out_value
 # note 2) 
 
 
@@ -70,53 +70,65 @@ He <- function(n, inputnode) {
     rnorm(n, 0, sqrt(2 / inputnode))
 }
 
-##### Data Loading -------------------------------------------------------------------------------
-#args <- commandArgs(trailing = TRUE)
-args <- c("2", "T")
-
-DataList <- grep("^20180[3-9]", list.files(path = "D:/PVD/시험생산", pattern = ".xlsx", recursive = TRUE), value = T) ## hidden '~$' temporary data) %>% grep("[$]",.,value=T,inver=T)
-DataList <- paste("D:/PVD/시험생산", DataList, sep = "/")
-for (i in DataList) {
-    for (j in excel_sheets(i)) {
-        assign(paste(j, substr(i, 13, 20), sep = "_"), read_xlsx(i, sheet = j))
+train_valid_split <- function(x, y, ratio = 0, env = parent.frame()) {
+    if (ratio == 1) {
+        cat("Given ratio ratio '1' regard to '0'.")
+        ratio <- 0
     }
-};rm(i, j, DataList)
+    if (ratio != 0) {
+        if ({ratio > 1} || {ratio < 0}) {
+            stop("'ratio' parameter should be in range [0, 1]")
+        } else if ({ratio > 0} && {ratio < 1}) {
+            idx <- sort(sample(1:nrow(x), nrow(x) * (1 - ratio)))
+            x_valid <<- x[-idx, ]
+            y_valid <<- y[-idx]
+            x_train <<- x[idx, ]
+            y_train <<- y[idx]
+        } 
+    } else {
+        x_train <<- x
+        y_train <<- y
+        x_valid <<- y_valid <- NA
+    }
+}
 
-ChamberSelect <- grep(paste0("^C", args[1], ".", args[2]), ls(), value = T)
-distance <- c(58, 53, 47)
-
-train <- data.frame()
-# for (i in ChamberSelect[-(1:2)][c(1, 3, 2)]) { # c2b
-for (i in ChamberSelect) {
-    temp <- get(i)
-    runs <- round(600 * distance[as.numeric(args[1])] / mean(temp$EML_LINE_SPEED))
-    temp <- temp %>% select(grep("IR$|FR$|VO$|PV$|사용유무", colnames(.)))
-    temp1 <- temp %>% select(grep("IR$|FR$|VO$", colnames(.))) %>% lagk(., 9)
-    temp2 <- temp %>% select(grep("IR$|FR$|VO$", colnames(.), invert = T)) %>% .[-1:-9,]
-    temp <- cbind(temp1, temp2)
-    temp <- cbind(head(select(temp, grep("PV$", colnames(temp), invert = T)), -runs),
-                  tail(select(temp, grep("PV$", colnames(temp))), -runs))
-    tempuse <- temp %>% select(grep("사용유무", colnames(.)))
-    temp[intersect(findruns_forward(tempuse[[as.numeric(args[1])]], runs),
-                   intersect(findruns_forward(tempuse[-as.numeric(args[1])][[1]], runs, 0),
-                             findruns_forward(tempuse[-as.numeric(args[1])][[2]], runs, 0))), ] %>%
-        select(grep("IR|FR|VO|PV", colnames(.))) -> temp_train
-    colnames(temp_train) <- paste("C", args[1], args[2], c(paste0(c("_FR", "_IR", "_VO"), "_lag_", rep(0:9, each = 3)), "_XRF"), sep = "")
-    train <- rbind(train, temp_train, use.names = F)
-};rm(list = setdiff(ls()[!ls() %in% c("train")], lsf.str()))
-
-# trim <- quantile(train$C2B_XRF, c(0.015, 0.99)) #C2B
-# train %>% filter(train$C2B_XRF > trim[1] & train$C2B_XRF < trim[2]) -> train_trim #C2B
-# train[7000:15500, ][-3550:-3560, ] -> train_trim # C3T
-# train[6500:15000, ][-3700:-3710, ] -> train_trim #C3B
-train[-c(1000:1150, 1350:2200, 2400:2750, 5400:5730, 6400:6450, 7000:7015), ] -> train_trim #C2T
-# train -> train_trim
-x <- train_trim[,-31]
-y <- train_trim[[31]]
-min_y <- min(y)
-max_y <- max(y)
-x <- as.matrix(apply(x, 2, rescale, newMin = 0, newMax = 1))
-y <- rescale(y, newMin = 0, newMax = 1)
+wight_initializer <- function(input, hidden, output, given.weight = NULL, init.dist = NULL) {
+    if (is.null(given.weight)) {
+        if (is.null(init.dist)) {
+            Wxh <- matrix(runif(n = input * hidden, min = -0.01, max = 0.01), hidden, input)
+            Whh <- matrix(runif(n = hidden * hidden, min = -0.01, max = 0.01), hidden, hidden)
+            Why <- matrix(runif(n = output * hidden, min = -0.01, max = 0.01), output, hidden)
+            biash <- as.vector(runif(n = hidden, min = -0.01, max = 0.01))
+            biasy <- as.vector(runif(n = output, min = -0.01, max = 0.01))
+        } else if (init.dist == "Xavier") {
+            Wxh <- matrix(Xavier(n = input * hidden, inputnode = input, outputnode = hidden), hidden, input)
+            Whh <- matrix(Xavier(n = hidden * hidden, inputnode = hidden, outputnode = hidden), hidden, hidden)
+            Why <- matrix(Xavier(n = output * hidden, inputnode = hidden, outputnode = output), output, hidden)
+            biash <- as.vector(Xavier(n = hidden, inputnode = input, outputnode = hidden))
+            biasy <- as.vector(Xavier(n = output, inputnode = hidden, outputnode = output))
+        } else if (init.dist == "He") {
+            Wxh <- matrix(He(n = input * hidden, inputnode = input), hidden, input)
+            Whh <- matrix(He(n = hidden * hidden, inputnode = hidden), hidden, hidden)
+            Why <- matrix(He(n = output * hidden, inputnode = hidden), output, hidden)
+            biash <- as.vector(He(n = hidden, inputnode = input))
+            biasy <- as.vector(He(n = output, inputnode = hidden))
+        } else {
+            stop("Given 'init.dist' is not available.
+                 Use {NULL || 'Xavier' || 'He'}, NULL use Uniform(0.01).")
+        }
+        } else {
+            if (is.list(given.weight)) {
+                Wxh <- given.weight$Wxh
+                Whh <- given.weight$Whh
+                Why <- given.weight$Why
+                biash <- given.weight$biash
+                biasy <- given.weight$biasy
+            } else {
+                stop("'given.weight' should be list type
+                     include ['Wxh', 'Whh', 'Why', 'biash', 'biasy'].")
+            }
+            }
+    }
 
 ##### RNN -------------------------------------------------------------------------------------------------
 myrnn <- function(x, y, hidden,
@@ -147,7 +159,6 @@ myrnn <- function(x, y, hidden,
     
     input <- ncol(x_train)
     output <- ncol(as.matrix(y_train))
-    # timestep <- nrow(x_train)
     
     # initialize weight
     if (is.null(init.weight)) {
@@ -229,9 +240,8 @@ myrnn <- function(x, y, hidden,
                     stop("Given 'activator' is not available. Use {NULL || 'tanh' || 'ReLU'}, NULL use Identity, ReLU use LeakyReLU.")
                 }
                 
-				# state hold
-				h0 <- ht[timestep, ]
-				
+                h0 <- ht[timestep, ]
+                
                 # dropout
                 ht[i, sample(hidden, hidden * dropout)] <- 0
                 # output layer
@@ -244,10 +254,9 @@ myrnn <- function(x, y, hidden,
             }
             
             if (learningRate == 0) {
-                pred <- rescale(ot, min(y_train), max(y_train))
-                rmse <- sqrt(mean((y_train_batch - pred) ^ 2))
+                rmse <- sqrt(mean((y_train_batch - ot) ^ 2))
                 return(list("rmse" = rmse,
-                            "prediction" = pred))
+                            "output_value" = ot))
                 break
             }
             
@@ -263,7 +272,7 @@ myrnn <- function(x, y, hidden,
                                              "biash" = biash,
                                              "biasy" = biasy),
                             "optimizer" = optimizer,
-                            "prediction" = pred))
+                            "output_value" = ot))
                 break
             }
             
@@ -327,26 +336,26 @@ myrnn <- function(x, y, hidden,
             dLdWhh <- apply(dLdWhh, c(1, 2), sum)
             dLdWxh <- apply(dLdWxh, c(1, 2), sum)
             
-            pred <- myrnn(x = x_train,
-                          y = y_train,
-                          hidden = hidden,
-                          learningRate = 0,
-                          epoch = 1,
-                          batch.size = nrow(x_train),
-                          loss = loss,
-                          activator = activator,
-                          optimizer = optimizer,
-                          init.weight = list("Wxh" = Wxh,
-                                             "Whh" = Whh,
-                                             "Why" = Why,
-                                             "biash" = biash,
-                                             "biasy" = biasy),
-                          init.dist = NULL,
-                          dropout = 0,
-                          dropconnect = 0,
-                          validation = 0,
-                          plotting = F)$prediction
-            rmse[iter] <- sqrt(mean((y_train - pred) ^ 2))
+            output_value <- myrnn(x = x_train,
+                                  y = y_train,
+                                  hidden = hidden,
+                                  learningRate = 0,
+                                  epoch = 1,
+                                  batch.size = nrow(x_train),
+                                  loss = loss,
+                                  activator = activator,
+                                  optimizer = optimizer,
+                                  init.weight = list("Wxh" = Wxh,
+                                                     "Whh" = Whh,
+                                                     "Why" = Why,
+                                                     "biash" = biash,
+                                                     "biasy" = biasy),
+                                  init.dist = NULL,
+                                  dropout = 0,
+                                  dropconnect = 0,
+                                  validation = 0,
+                                  plotting = F)$output_value
+            rmse[iter] <- sqrt(mean((y_train - output_value) ^ 2))
             
             # current result export
             if (iter != epoch) {
@@ -357,7 +366,7 @@ myrnn <- function(x, y, hidden,
                                                      "Why" = Why,
                                                      "biash" = biash,
                                                      "biasy" = biasy),
-                                    "prediction" = pred),
+                                    "output_value" = output_value),
                        envir = globalenv(),
                        inherits = TRUE)
             } else {
@@ -369,31 +378,31 @@ myrnn <- function(x, y, hidden,
                 cat("epoch : ", iter," ------------------------------------\nbatch : ", b, "\tLoss(", loss, ") : ", sum(LOSS) / timestep,
                     "\nBatch_Time : ", round(as.numeric(Sys.time() - batchstart), 3), "s\t", "RMSE : ", rmse[iter], "\n", sep = "")
             } else {
-                pred_valid <- myrnn(x = x_valid,
-                                    y = y_valid,
-                                    hidden = hidden,
-                                    learningRate = 0,
-                                    epoch = 1,
-                                    batch.size = nrow(x_valid),
-                                    loss = loss,
-                                    activator = activator,
-                                    optimizer = optimizer,
-                                    init.weight = list("Wxh" = Wxh,
-                                                       "Whh" = Whh,
-                                                       "Why" = Why,
-                                                       "biash" = biash,
-                                                       "biasy" = biasy),
-                                    init.dist = NULL,
-                                    dropout = 0,
-                                    dropconnect = 0,
-                                    validation = 0,
-                                    plotting = F)
+                output_value_valid <- myrnn(x = x_valid,
+                                            y = y_valid,
+                                            hidden = hidden,
+                                            learningRate = 0,
+                                            epoch = 1,
+                                            batch.size = nrow(x_valid),
+                                            loss = loss,
+                                            activator = activator,
+                                            optimizer = optimizer,
+                                            init.weight = list("Wxh" = Wxh,
+                                                               "Whh" = Whh,
+                                                               "Why" = Why,
+                                                               "biash" = biash,
+                                                               "biasy" = biasy),
+                                            init.dist = NULL,
+                                            dropout = 0,
+                                            dropconnect = 0,
+                                            validation = 0,
+                                            plotting = F)
                 
-                rmse_valid[iter] <- pred_valid$rmse
+                rmse_valid[iter] <- output_value_valid$rmse
                 
                 cat("epoch : ", iter," ------------------------------------\nbatch : ", b, "\tLoss(", loss, ") : ", sum(LOSS) / timestep,
                     "\nBatch_Time : ", round(as.numeric(Sys.time() - batchstart), 3), "s\n", "RMSE : ", rmse[iter], "\n",
-                    "Validation_RMSE : ", pred_valid$rmse, "\n", sep = "")
+                    "Validation_RMSE : ", output_value_valid$rmse, "\n", sep = "")
             }
             
             # weight update
@@ -418,20 +427,20 @@ myrnn <- function(x, y, hidden,
         if (plotting) {
             if (validation == 0) {
                 if (iter == 1) {win.graph(); par(mfrow = c(3, 1), mar = c(2, 4, 1, 1))}
-                matplot(cbind(y_train, pred), type = "l", lty = 1, ylab = "Target(y)")
+                matplot(cbind(y_train, output_value), type = "l", lty = 1, ylab = "Target(y)")
                 legend("top", legend = c("Actual(Normalized)", "Predicted"), lty = 1, col = 1:2, bty = "n", ncol = 2)
-                matplot(cbind(y_train - pred, 0), type = "l", lty = 1, ylab = "Error")
+                matplot(cbind(y_train - output_value, 0), type = "l", lty = 1, ylab = "Error")
                 plot(x = 1:epoch, y = c(rmse, rep_len(NA, epoch - iter)), type = "l", ylab = "RMSE per epoch")
                 legend("top", legend = c("Train RMSE", rmse[iter]), lty = 1, col = 1, bty = "n", ncol = 2)
             } else {
                 if (iter == 1) {win.graph(); par(mar = c(2, 2, 3, 1))
                     layout(matrix(c(1,2,3,4,5,5), 3, 2, byrow = T), widths = c(1 - validation, validation))}
-                matplot(cbind(y_train, pred), type = "l", lty = 1, main = paste0("Target(y_train : ", (1 - validation) * 100, "%)"))
+                matplot(cbind(y_train, output_value), type = "l", lty = 1, main = paste0("Target(y_train : ", (1 - validation) * 100, "%)"))
                 legend("top", legend = c("Actual(Normalized)", "Predicted"), lty = 1, col = 1:2, bty = "n", ncol = 2)
-                matplot(cbind(y_valid, pred_valid$prediction), type = "l", lty = 1, main = paste0("Target(y_valid : ", validation * 100, "%)"))
+                matplot(cbind(y_valid, output_value_valid$output_value), type = "l", lty = 1, main = paste0("Target(y_valid : ", validation * 100, "%)"))
                 legend("top", legend = c("Actual(Normalized)", "Predicted"), lty = 1, col = 1:2, bty = "n", ncol = 2)
-                matplot(cbind(y_train - pred, 0), type = "l", lty = 1, main = "Error_train")
-                matplot(cbind(y_valid - pred_valid$prediction, 0), type = "l", lty = 1, main = "Error_valid")
+                matplot(cbind(y_train - output_value, 0), type = "l", lty = 1, main = "Error_train")
+                matplot(cbind(y_valid - output_value_valid$output_value, 0), type = "l", lty = 1, main = "Error_valid")
                 matplot(x = 1:epoch, y = cbind(c(rmse, rep_len(NA, epoch - iter)), c(rmse_valid, rep_len(NA, epoch - iter))),
                         type = "l", lty = 1, main = "RMSE per epoch")
                 # matplot(x = 1:epoch, y = cbind(rmse, rmse_valid), type = "l", lty = 1, main = "RMSE per epoch")
@@ -445,7 +454,7 @@ myrnn <- function(x, y, hidden,
         } else {
             cat("=============================================\n",
                 "epoch : ", iter,"\tTime : ", round(as.numeric(Sys.time() - epochstart), 3), "s\n", "RMSE : ",
-                rmse[iter], "\tValidation_RMSE : ", pred_valid$rmse,
+                rmse[iter], "\tValidation_RMSE : ", output_value_valid$rmse,
                 "\n=============================================\n", sep = "")
         }
     }
@@ -459,125 +468,23 @@ myrnn <- function(x, y, hidden,
                                  "biasy" = biasy),
                 "optimizer" = optimizer,
                 "activator" = activator,
-                "prediction" = pred))
+                "output_value" = ot))
 }
 
-predict_myrnn <- function(model, test.x , test.y = NULL) {
-    if (is.null(test.y)) {
-        test.y <- c(0, 1)
-        plotting <- F
-    } else {
-        plotting <- T
-    }
+predict.myrnn <- function(model, test.x) {
     myrnn(x = test.x,
-          y = test.y,
+          y = NA,
           hidden = length(model$weights$biash),
           learningRate = 0,
           epoch = 1,
           batch.size = nrow(test.x),
           loss = model$loss,
           activator = model$activator,
-          optimizer = NULL,
-          init.weight = model$weights,
-          # init.dist = NULL,
-          # dropout = 0,
-          # dropconnect = 0,
-          # validation = 0,
-          plotting = plotting)$prediction
-}
-
-update_myrnn <- function(model, x, y, learningRate = 0.0001, epoch = 100, batch.size = 128,
-                         validation = 0, dropout = 0, dropconnect = 0, plotting = T) {
-    myrnn(x = x,
-          y = y,
-          hidden = length(model$weights$biash),
-          learningRate = learningRate,
-          epoch = epoch,
-          batch.size = batch.size,
-          loss = model$loss,
-          activator = model$activator,
           optimizer = model$optimizer,
           init.weight = model$weights,
-          # init.dist = NULL,
-          validation = validation,
-          dropout = dropout,
-          dropconnect = dropconnect,
-          plotting = plotting)
+          init.dist = NULL,
+          dropout = 0,
+          dropconnect = 0,
+          validation = 0,
+          plotting = F)$output_value
 }
-##### Training -----------------------------------------------------------------------------------
-# rm(result_current)
-model <- myrnn(x = x,
-               y = y,
-               hidden = 150,
-               learningRate = 0.0001,
-               epoch = 1000,
-               batch.size = 128,
-               loss = "Elastic",
-               activator = "tanh",
-               init.weight = NULL,
-               init.dist = "Xavier",
-               optimizer = "adam",
-               dropout = 0.2,
-               dropconnect = 0.2,
-               validation = 0.2,
-               plotting = T)
-
-##### other chamber ------------------------------------------------------------------------------
-args <- c("3", "top")
-source('dataload.R')
-x_3t <- rescale(train[5700:12200, -31], 0, 1) %>% as.matrix()
-y_3t <- rescale(train[5700:12200, 31], 0, 1) %>% as.matrix()
-model11 <- myrnn(x = x_3t,
-               y = y_3t,
-               hidden = 150,
-               learningRate = 0.0001,
-               epoch = 1,
-               batch.size = nrow(x_3t),
-               loss = "Elastic",
-               activator = "tanh",
-               init.weight = model$weights,
-               init.dist = "Xavier",
-               optimizer = "adam",
-               dropout = 0,
-               dropconnect = 0,
-               validation = 0,
-               plotting = T)
-
-model1 <- myrnn(x = x_3t,
-                y = y_3t,
-                hidden = 150,
-                learningRate = 0.0001,
-                epoch = 1000,
-                batch.size = nrow(x_3t),
-                loss = "Elastic",
-                activator = "tanh",
-                init.weight = model$weights,
-                init.dist = "Xavier",
-                optimizer = "adam",
-                dropout = 0,
-                dropconnect = 0,
-                validation = 0.2,
-                plotting = T)
-# 
-# model <- myrnn(x = x,
-#                y = y,
-#                hidden = 15,
-#                learningRate = 0.0001,
-#                epoch = 2920,
-#                batch.size = nrow(x),
-#                loss = "Elastic",
-#                activator = "tanh",
-#                init.weight = model$weights,
-#                init.dist = "Xavier",
-#                optimizer = "adam",
-#                dropout = 0,
-#                dropconnect = 0,
-#                validation = 0.2,
-#                plotting = T)
-# 
-# 
-##### Memo ---------------------------------------------------------------------------------------
-# hiddens <- c(1, 2, 3, ...)
-# hidden <- hiddens[h]
-# if (h == 1) { input -> myrnn -> output[[h]]}
-# else (output[[h - 1]] -> myrnn -> output[[h]])
