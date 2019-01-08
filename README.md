@@ -1,5 +1,7 @@
 # myrnn
 
-This repo. is my practice place.
-
-To make RNN function.....
+### Make RNN algorithm functions
+- simple RNN model
+  + normal performance
+- simple Bidirection RNN model
+  + not so good....
