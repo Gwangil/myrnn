@@ -2,6 +2,6 @@
 
 ### Make RNN algorithm functions
 - simple RNN model
-  + normal performance
+  + only 1 hidden layer
 - simple Bidirection RNN model
-  + not so good....
+
