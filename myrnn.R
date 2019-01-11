@@ -64,11 +64,16 @@ myrnn <- function(x, y, hidden,
   output = ncol(as.matrix(y))
   
   # initialize weight
-  wight_initializer(input = input,
+  weightList <- wight_initializer(input = input,
                     hidden = hidden,
                     output = output,
                     given.weight = init.weight,
                     init.dist = init.dist)
+  Wxh <- weightList[["Wxh"]]
+  Whh <- weightList[["Whh"]]
+  Why <- weightList[["Why"]]
+  biash <- weightList[["biash"]]
+  biasy <- weightList[["biasy"]]
   
   # training
   batch <- round(seq(from = 0 , to = nrow(x_train), length.out = max(2, round(nrow(x_train) / (batch.size + 1e-4)) + 1)))
